@@ -150,3 +150,33 @@ class SafetyLens:
     def load_vector(path: str | Path) -> torch.Tensor:
         """Load a persona vector from disk."""
         return torch.load(path, weights_only=True)
+
+    def quick_scan(
+        self,
+        text: str,
+        layer_idx: int,
+        persona_names: Optional[list[str]] = None,
+    ) -> dict[str, float]:
+        """
+        One-liner scan using pre-built stimulus sets.
+
+        Args:
+            text: The prompt to scan.
+            layer_idx: Layer to inspect.
+            persona_names: Which personas to scan for. Defaults to all available.
+
+        Returns:
+            Mapping of persona name -> alignment score.
+        """
+        from safety_lens.vectors import STIMULUS_SETS
+
+        if persona_names is None:
+            persona_names = list(STIMULUS_SETS.keys())
+
+        inputs = self.tokenizer(text, return_tensors="pt").to(self.device)
+        results = {}
+        for name in persona_names:
+            stim = STIMULUS_SETS[name]
+            vec = self.extract_persona_vector(stim["pos"], stim["neg"], layer_idx)
+            results[name] = self.scan(inputs.input_ids, vec, layer_idx)
+        return results

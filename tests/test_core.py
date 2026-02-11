@@ -131,3 +131,21 @@ class TestSafetyLens:
         assert isinstance(scores, dict)
         assert set(scores.keys()) == {0, 6}
         assert all(isinstance(v, float) for v in scores.values())
+
+
+class TestQuickScan:
+    def test_quick_scan_returns_dict(self, gpt2_model, gpt2_tokenizer):
+        """quick_scan should return a dict of persona_name -> score."""
+        lens = SafetyLens(gpt2_model, gpt2_tokenizer)
+        result = lens.quick_scan("Tell me something nice.", layer_idx=6)
+        assert isinstance(result, dict)
+        assert "sycophancy" in result
+        assert "deception" in result
+        assert all(isinstance(v, float) for v in result.values())
+
+    def test_quick_scan_specific_personas(self, gpt2_model, gpt2_tokenizer):
+        """quick_scan with persona_names should only scan those."""
+        lens = SafetyLens(gpt2_model, gpt2_tokenizer)
+        result = lens.quick_scan("Hello", layer_idx=6, persona_names=["sycophancy"])
+        assert "sycophancy" in result
+        assert "deception" not in result
