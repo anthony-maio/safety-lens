@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "safety-lens"
+version = "0.1.0"
+description = "MRI-style introspection for Hugging Face models — see how models think, not just what they say."
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0",
+    "transformers>=4.38",
+    "accelerate>=0.25",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+eval = ["lighteval>=0.4"]
+demo = ["gradio>=4.0", "plotly>=5.0"]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=4.0",
+]
+all = ["safety-lens[eval,demo,dev]"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
