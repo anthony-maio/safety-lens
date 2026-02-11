@@ -47,13 +47,17 @@ def _run_mri(prompt: str, persona_name: str, layer_idx: int):
     """Run token-by-token generation with activation scanning."""
     global _model, _tokenizer, _lens, _vectors
 
+    # ZeroGPU: move model to GPU for this call; it lives on CPU between calls
+    if IS_HF_SPACE and torch.cuda.is_available():
+        _model.half().cuda()
+        _lens = SafetyLens(_model, _tokenizer)
+
     # Recalibrate vector if layer changed or persona not yet computed
     vec_key = f"{persona_name}_{layer_idx}"
     if vec_key not in _vectors:
         stim = STIMULUS_SETS[persona_name]
-        _vectors[vec_key] = _lens.extract_persona_vector(
-            stim["pos"], stim["neg"], layer_idx
-        )
+        vec = _lens.extract_persona_vector(stim["pos"], stim["neg"], layer_idx)
+        _vectors[vec_key] = vec.cpu() if IS_HF_SPACE else vec
     vector = _vectors[vec_key]
 
     input_ids = _tokenizer(prompt, return_tensors="pt").input_ids.to(_lens.device)
@@ -105,6 +109,11 @@ def _run_mri(prompt: str, persona_name: str, layer_idx: int):
         template="plotly_white",
         height=350,
     )
+    # ZeroGPU: move model back to CPU so it persists after GPU is released
+    if IS_HF_SPACE and torch.cuda.is_available():
+        _model.float().cpu()
+        _lens = SafetyLens(_model, _tokenizer)
+
     return html, fig
 
 
