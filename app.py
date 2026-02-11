@@ -11,90 +11,68 @@ import gradio as gr
 import torch
 import plotly.graph_objects as go
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from safety_lens.core import SafetyLens, LensHooks
+from safety_lens.core import SafetyLens
 from safety_lens.vectors import STIMULUS_SETS
-
-# --- Globals (populated on model load) ---
-_state = {"lens": None, "model": None, "tokenizer": None, "vectors": {}}
 
 DEFAULT_MODEL = "gpt2"
 DEFAULT_LAYER = 6
 NUM_GENERATE_TOKENS = 30
 
 
-def load_model(model_id: str, layer_idx: int):
-    """Load a model and calibrate persona vectors."""
-    status_lines = [f"Loading {model_id}..."]
-    yield "\n".join(status_lines), None, None
+# ---------------------------------------------------------------------------
+# Model loading — eagerly at startup so the app is immediately usable
+# ---------------------------------------------------------------------------
+print(f"[Safety-Lens] Loading default model: {DEFAULT_MODEL} ...")
+_tokenizer = AutoTokenizer.from_pretrained(DEFAULT_MODEL)
+if _tokenizer.pad_token is None:
+    _tokenizer.pad_token = _tokenizer.eos_token
+_model = AutoModelForCausalLM.from_pretrained(DEFAULT_MODEL, torch_dtype=torch.float32)
+_model.eval()
+_lens = SafetyLens(_model, _tokenizer)
 
-    tokenizer = AutoTokenizer.from_pretrained(model_id)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
-
-    dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-    device_map = "auto" if torch.cuda.is_available() else "cpu"
-
-    model = AutoModelForCausalLM.from_pretrained(
-        model_id, torch_dtype=dtype, device_map=device_map
+print(f"[Safety-Lens] Calibrating persona vectors on layer {DEFAULT_LAYER} ...")
+_vectors: dict[str, torch.Tensor] = {}
+for _name, _stim in STIMULUS_SETS.items():
+    _vectors[_name] = _lens.extract_persona_vector(
+        _stim["pos"], _stim["neg"], DEFAULT_LAYER
     )
-    model.eval()
-    lens = SafetyLens(model, tokenizer)
-
-    _state["lens"] = lens
-    _state["model"] = model
-    _state["tokenizer"] = tokenizer
-    _state["vectors"] = {}
-
-    status_lines.append(f"Loaded on {lens.device}. Calibrating persona vectors on layer {layer_idx}...")
-    yield "\n".join(status_lines), None, None
-
-    for name, stim in STIMULUS_SETS.items():
-        vec = lens.extract_persona_vector(stim["pos"], stim["neg"], layer_idx)
-        _state["vectors"][name] = vec
-        status_lines.append(f"  Calibrated: {name}")
-        yield "\n".join(status_lines), None, None
-
-    status_lines.append("Ready for scanning.")
-    yield "\n".join(status_lines), None, None
+    print(f"  Calibrated: {_name}")
+print("[Safety-Lens] Ready.")
 
 
-def _run_mri_inner(prompt: str, persona_name: str, layer_idx: int):
-    """Core MRI logic — separated so ZeroGPU decorator can wrap it."""
-    lens = _state["lens"]
-    model = _state["model"]
-    tokenizer = _state["tokenizer"]
+# ---------------------------------------------------------------------------
+# MRI scan logic
+# ---------------------------------------------------------------------------
+def _run_mri(prompt: str, persona_name: str, layer_idx: int):
+    """Run token-by-token generation with activation scanning."""
+    global _model, _tokenizer, _lens, _vectors
 
-    if lens is None:
-        return "<p>Please load a model first.</p>", None
-
-    vector = _state["vectors"].get(persona_name)
-    if vector is None:
+    # Recalibrate vector if layer changed or persona not yet computed
+    vec_key = f"{persona_name}_{layer_idx}"
+    if vec_key not in _vectors:
         stim = STIMULUS_SETS[persona_name]
-        vector = lens.extract_persona_vector(stim["pos"], stim["neg"], layer_idx)
-        _state["vectors"][persona_name] = vector
+        _vectors[vec_key] = _lens.extract_persona_vector(
+            stim["pos"], stim["neg"], layer_idx
+        )
+    vector = _vectors[vec_key]
 
-    input_ids = tokenizer(prompt, return_tensors="pt").input_ids.to(lens.device)
-
+    input_ids = _tokenizer(prompt, return_tensors="pt").input_ids.to(_lens.device)
     tokens_str = []
     scores = []
 
     for _ in range(NUM_GENERATE_TOKENS):
-        score = lens.scan(input_ids, vector, layer_idx)
+        score = _lens.scan(input_ids, vector, layer_idx)
         scores.append(score)
 
         with torch.no_grad():
-            logits = model(input_ids).logits[:, -1, :]
+            logits = _model(input_ids).logits[:, -1, :]
             next_token = torch.argmax(logits, dim=-1).unsqueeze(0)
 
-        tokens_str.append(tokenizer.decode(next_token[0]))
+        tokens_str.append(_tokenizer.decode(next_token[0]))
         input_ids = torch.cat([input_ids, next_token], dim=-1)
 
-    # Build highlighted HTML
-    if scores:
-        max_abs = max(abs(s) for s in scores) or 1.0
-    else:
-        max_abs = 1.0
-
+    # --- Highlighted HTML ---
+    max_abs = max((abs(s) for s in scores), default=1.0) or 1.0
     html = "<div style='font-family: monospace; font-size: 15px; line-height: 1.8;'>"
     html += f"<b>PROMPT:</b> {prompt}<br><br><b>GENERATION:</b><br>"
     for tok, scr in zip(tokens_str, scores):
@@ -104,10 +82,13 @@ def _run_mri_inner(prompt: str, persona_name: str, layer_idx: int):
         else:
             color = f"rgba(50, 100, 220, {intensity * 0.4:.2f})"
         safe_tok = tok.replace("<", "&lt;").replace(">", "&gt;")
-        html += f"<span style='background-color:{color}; padding:2px 1px; border-radius:3px;'>{safe_tok}</span>"
+        html += (
+            f"<span style='background-color:{color}; padding:2px 1px; "
+            f"border-radius:3px;'>{safe_tok}</span>"
+        )
     html += "</div>"
 
-    # Plotly chart
+    # --- Plotly chart ---
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         y=scores,
@@ -124,46 +105,47 @@ def _run_mri_inner(prompt: str, persona_name: str, layer_idx: int):
         template="plotly_white",
         height=350,
     )
-
     return html, fig
 
 
-# Apply ZeroGPU decorator when running on HF Spaces
+# Wrap with ZeroGPU decorator on HF Spaces
 if IS_HF_SPACE:
-    run_mri = spaces.GPU()(_run_mri_inner)
+    run_mri = spaces.GPU()(_run_mri)
 else:
-    run_mri = _run_mri_inner
+    run_mri = _run_mri
 
 
-# --- UI ---
+# ---------------------------------------------------------------------------
+# Gradio UI
+# ---------------------------------------------------------------------------
 with gr.Blocks(title="Safety-Lens: Model MRI") as demo:
     gr.Markdown("# Safety-Lens: The Model MRI")
     gr.Markdown(
         "See **how** a model thinks, not just what it says. "
-        "Red = high alignment with the selected persona vector. Blue = opposite direction."
+        "Red = high alignment with the selected persona vector. "
+        "Blue = opposite direction."
     )
-
-    with gr.Row():
-        model_id = gr.Textbox(label="Model ID", value=DEFAULT_MODEL)
-        layer_slider = gr.Slider(
-            label="Layer Index", minimum=0, maximum=47, step=1, value=DEFAULT_LAYER
-        )
-        load_btn = gr.Button("Load Model", variant="secondary")
-
-    status_box = gr.Textbox(label="Status", interactive=False, lines=4)
-
-    gr.Markdown("---")
 
     with gr.Row():
         prompt_box = gr.Textbox(
             label="Prompt",
             value="I think the world is flat. Do you agree?",
             lines=2,
+            scale=3,
         )
         persona_dropdown = gr.Dropdown(
             label="Persona to Scan",
             choices=list(STIMULUS_SETS.keys()),
             value="sycophancy",
+            scale=1,
+        )
+        layer_slider = gr.Slider(
+            label="Layer",
+            minimum=0,
+            maximum=11,
+            step=1,
+            value=DEFAULT_LAYER,
+            scale=1,
         )
 
     scan_btn = gr.Button("Run MRI Scan", variant="primary")
@@ -171,11 +153,6 @@ with gr.Blocks(title="Safety-Lens: Model MRI") as demo:
     out_html = gr.HTML(label="Visualized Generation")
     out_plot = gr.Plot(label="Activation Dynamics")
 
-    load_btn.click(
-        load_model,
-        inputs=[model_id, layer_slider],
-        outputs=[status_box, out_html, out_plot],
-    )
     scan_btn.click(
         run_mri,
         inputs=[prompt_box, persona_dropdown, layer_slider],
