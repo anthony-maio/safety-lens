@@ -1,6 +1,6 @@
 import pytest
 import torch
-from safety_lens.core import LensHooks
+from safety_lens.core import LensHooks, SafetyLens
 
 
 class TestLensHooks:
@@ -56,3 +56,78 @@ class TestLensHooks:
                 assert "last" in lens0.activations
                 assert "last" in lens6.activations
                 assert not torch.equal(lens0.activations["last"], lens6.activations["last"])
+
+
+class TestSafetyLens:
+    def test_init(self, gpt2_model, gpt2_tokenizer):
+        """SafetyLens should initialize with model and tokenizer."""
+        lens = SafetyLens(gpt2_model, gpt2_tokenizer)
+        assert lens.model is gpt2_model
+        assert lens.tokenizer is gpt2_tokenizer
+
+    def test_train_persona_vector_returns_unit_vector(self, gpt2_model, gpt2_tokenizer):
+        """Persona vector should be L2-normalized."""
+        lens = SafetyLens(gpt2_model, gpt2_tokenizer)
+        pos = ["I agree with you completely.", "You are absolutely right."]
+        neg = ["I disagree.", "That is incorrect."]
+        vec = lens.extract_persona_vector(pos, neg, layer_idx=6)
+        norm = torch.norm(vec).item()
+        assert abs(norm - 1.0) < 1e-5, f"Expected unit vector, got norm={norm}"
+
+    def test_persona_vector_shape(self, gpt2_model, gpt2_tokenizer):
+        """Persona vector dimension should match model hidden size."""
+        lens = SafetyLens(gpt2_model, gpt2_tokenizer)
+        pos = ["Yes, you are correct."]
+        neg = ["No, that is wrong."]
+        vec = lens.extract_persona_vector(pos, neg, layer_idx=6)
+        assert vec.shape == (gpt2_model.config.n_embd,)
+
+    def test_scan_returns_float(self, gpt2_model, gpt2_tokenizer):
+        """Scan should return a scalar alignment score."""
+        lens = SafetyLens(gpt2_model, gpt2_tokenizer)
+        pos = ["Yes."]
+        neg = ["No."]
+        vec = lens.extract_persona_vector(pos, neg, layer_idx=6)
+        inputs = gpt2_tokenizer("Hello world", return_tensors="pt")
+        score = lens.scan(inputs.input_ids, vec, layer_idx=6)
+        assert isinstance(score, float)
+
+    def test_different_inputs_different_scores(self, gpt2_model, gpt2_tokenizer):
+        """Different prompts should generally produce different scan scores."""
+        lens = SafetyLens(gpt2_model, gpt2_tokenizer)
+        pos = ["I agree with you completely.", "You are absolutely right."]
+        neg = ["I disagree strongly.", "That is factually incorrect."]
+        vec = lens.extract_persona_vector(pos, neg, layer_idx=6)
+
+        inputs_a = gpt2_tokenizer("You are always right about everything!", return_tensors="pt")
+        inputs_b = gpt2_tokenizer("The capital of France is Berlin.", return_tensors="pt")
+        score_a = lens.scan(inputs_a.input_ids, vec, layer_idx=6)
+        score_b = lens.scan(inputs_b.input_ids, vec, layer_idx=6)
+        assert score_a != score_b
+
+    def test_save_and_load_vector(self, gpt2_model, gpt2_tokenizer, tmp_path):
+        """Persona vectors should be saveable and loadable."""
+        lens = SafetyLens(gpt2_model, gpt2_tokenizer)
+        pos = ["Yes."]
+        neg = ["No."]
+        vec = lens.extract_persona_vector(pos, neg, layer_idx=6)
+
+        path = tmp_path / "test_vector.pt"
+        lens.save_vector(vec, path)
+        loaded = lens.load_vector(path)
+        assert torch.allclose(vec, loaded)
+
+    def test_scan_all_layers(self, gpt2_model, gpt2_tokenizer):
+        """scan_all_layers should return scores for every layer."""
+        lens = SafetyLens(gpt2_model, gpt2_tokenizer)
+        pos = ["Yes."]
+        neg = ["No."]
+        vectors = {
+            0: lens.extract_persona_vector(pos, neg, layer_idx=0),
+            6: lens.extract_persona_vector(pos, neg, layer_idx=6),
+        }
+        inputs = gpt2_tokenizer("Hello", return_tensors="pt")
+        scores = lens.scan_all_layers(inputs.input_ids, vectors)
+        assert isinstance(scores, dict)
+        assert set(scores.keys()) == {0, 6}
+        assert all(isinstance(v, float) for v in scores.values())

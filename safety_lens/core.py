@@ -65,3 +65,88 @@ class LensHooks:
             h.remove()
         self._hooks.clear()
         self.activations.clear()
+
+
+class SafetyLens:
+    """
+    The MRI Machine. Extracts persona vectors and scans model internals.
+
+    Usage:
+        lens = SafetyLens(model, tokenizer)
+        vec = lens.extract_persona_vector(pos_texts, neg_texts, layer_idx=15)
+        score = lens.scan(input_ids, vec, layer_idx=15)
+    """
+
+    def __init__(self, model: PreTrainedModel, tokenizer: PreTrainedTokenizer):
+        self.model = model
+        self.tokenizer = tokenizer
+        self.device = next(model.parameters()).device
+
+    def _collect_last_token_states(
+        self, texts: list[str], layer_idx: int
+    ) -> torch.Tensor:
+        """Run texts through the model and collect last-token hidden states."""
+        states = []
+        for text in texts:
+            with LensHooks(self.model, layer_idx) as lens:
+                inputs = self.tokenizer(
+                    text, return_tensors="pt", padding=False, truncation=True
+                ).to(self.device)
+                with torch.no_grad():
+                    self.model(**inputs)
+                last_state = lens.activations["last"][0, -1, :]
+                states.append(last_state)
+        return torch.stack(states)
+
+    def extract_persona_vector(
+        self,
+        pos_texts: list[str],
+        neg_texts: list[str],
+        layer_idx: int,
+    ) -> torch.Tensor:
+        """
+        PV-EAT: Extract a persona vector via difference-in-means.
+
+        The resulting vector points from the negative centroid toward the
+        positive centroid in activation space, then is L2-normalized.
+        """
+        pos_mean = self._collect_last_token_states(pos_texts, layer_idx).mean(dim=0)
+        neg_mean = self._collect_last_token_states(neg_texts, layer_idx).mean(dim=0)
+        direction = pos_mean - neg_mean
+        return direction / torch.norm(direction)
+
+    def scan(
+        self, input_ids: torch.Tensor, vector: torch.Tensor, layer_idx: int
+    ) -> float:
+        """
+        Compute alignment between a forward pass and a persona vector.
+
+        Returns the dot-product projection of the last token's hidden state
+        onto the persona vector.
+        """
+        with LensHooks(self.model, layer_idx) as lens:
+            with torch.no_grad():
+                self.model(input_ids.to(self.device))
+            state = lens.activations["last"][0, -1, :]
+            return torch.dot(state, vector.to(state.device)).item()
+
+    def scan_all_layers(
+        self,
+        input_ids: torch.Tensor,
+        vectors: dict[int, torch.Tensor],
+    ) -> dict[int, float]:
+        """Scan multiple layers, returning layer_idx -> alignment score."""
+        scores = {}
+        for layer_idx, vector in vectors.items():
+            scores[layer_idx] = self.scan(input_ids, vector, layer_idx)
+        return scores
+
+    @staticmethod
+    def save_vector(vector: torch.Tensor, path: str | Path) -> None:
+        """Save a persona vector to disk."""
+        torch.save(vector, path)
+
+    @staticmethod
+    def load_vector(path: str | Path) -> torch.Tensor:
+        """Load a persona vector from disk."""
+        return torch.load(path, weights_only=True)
