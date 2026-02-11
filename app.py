@@ -1,17 +1,18 @@
 """Safety-Lens: The Model MRI — a real-time activation scanner for HF models."""
 
 import os
+
+# ZeroGPU: must import spaces BEFORE torch/CUDA
+IS_HF_SPACE = os.environ.get("SPACE_ID") is not None
+if IS_HF_SPACE:
+    import spaces
+
 import gradio as gr
 import torch
 import plotly.graph_objects as go
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from safety_lens.core import SafetyLens, LensHooks
 from safety_lens.vectors import STIMULUS_SETS
-
-# ZeroGPU support — only import spaces on HF infrastructure
-IS_HF_SPACE = os.environ.get("SPACE_ID") is not None
-if IS_HF_SPACE:
-    import spaces
 
 # --- Globals (populated on model load) ---
 _state = {"lens": None, "model": None, "tokenizer": None, "vectors": {}}
