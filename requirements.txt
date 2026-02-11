@@ -2,5 +2,5 @@ torch>=2.0
 transformers>=4.38
 accelerate>=0.25
 numpy>=1.24
-gradio>=4.0
 plotly>=5.0
+spaces
