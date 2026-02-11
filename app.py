@@ -1,11 +1,17 @@
 """Safety-Lens: The Model MRI — a real-time activation scanner for HF models."""
 
+import os
 import gradio as gr
 import torch
 import plotly.graph_objects as go
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from safety_lens.core import SafetyLens, LensHooks
 from safety_lens.vectors import STIMULUS_SETS
+
+# ZeroGPU support — only import spaces on HF infrastructure
+IS_HF_SPACE = os.environ.get("SPACE_ID") is not None
+if IS_HF_SPACE:
+    import spaces
 
 # --- Globals (populated on model load) ---
 _state = {"lens": None, "model": None, "tokenizer": None, "vectors": {}}
@@ -23,8 +29,12 @@ def load_model(model_id: str, layer_idx: int):
     tokenizer = AutoTokenizer.from_pretrained(model_id)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+
+    dtype = torch.float16 if torch.cuda.is_available() else torch.float32
+    device_map = "auto" if torch.cuda.is_available() else "cpu"
+
     model = AutoModelForCausalLM.from_pretrained(
-        model_id, torch_dtype=torch.float32, device_map="cpu"
+        model_id, torch_dtype=dtype, device_map=device_map
     )
     model.eval()
     lens = SafetyLens(model, tokenizer)
@@ -34,7 +44,7 @@ def load_model(model_id: str, layer_idx: int):
     _state["tokenizer"] = tokenizer
     _state["vectors"] = {}
 
-    status_lines.append(f"Loaded. Calibrating persona vectors on layer {layer_idx}...")
+    status_lines.append(f"Loaded on {lens.device}. Calibrating persona vectors on layer {layer_idx}...")
     yield "\n".join(status_lines), None, None
 
     for name, stim in STIMULUS_SETS.items():
@@ -47,8 +57,8 @@ def load_model(model_id: str, layer_idx: int):
     yield "\n".join(status_lines), None, None
 
 
-def run_mri(prompt: str, persona_name: str, layer_idx: int):
-    """Run token-by-token generation with MRI scanning."""
+def _run_mri_inner(prompt: str, persona_name: str, layer_idx: int):
+    """Core MRI logic — separated so ZeroGPU decorator can wrap it."""
     lens = _state["lens"]
     model = _state["model"]
     tokenizer = _state["tokenizer"]
@@ -117,8 +127,15 @@ def run_mri(prompt: str, persona_name: str, layer_idx: int):
     return html, fig
 
 
+# Apply ZeroGPU decorator when running on HF Spaces
+if IS_HF_SPACE:
+    run_mri = spaces.GPU()(_run_mri_inner)
+else:
+    run_mri = _run_mri_inner
+
+
 # --- UI ---
-with gr.Blocks(theme=gr.themes.Soft(), title="Safety-Lens: Model MRI") as demo:
+with gr.Blocks(title="Safety-Lens: Model MRI") as demo:
     gr.Markdown("# Safety-Lens: The Model MRI")
     gr.Markdown(
         "See **how** a model thinks, not just what it says. "
@@ -165,4 +182,4 @@ with gr.Blocks(theme=gr.themes.Soft(), title="Safety-Lens: Model MRI") as demo:
     )
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(theme=gr.themes.Soft())

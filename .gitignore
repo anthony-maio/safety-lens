@@ -1,5 +1,6 @@
 __pycache__/
 *.py[cod]
+*$py.class
 *.egg-info/
 dist/
 build/
@@ -7,3 +8,11 @@ build/
 *.egg
 .pytest_cache/
 .claude/
+*.so
+.env
+.venv/
+venv/
+ENV/
+*.log
+.DS_Store
+Thumbs.db
