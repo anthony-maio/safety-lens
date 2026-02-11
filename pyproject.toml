@@ -7,14 +7,32 @@ name = "safety-lens"
 version = "0.1.0"
 description = "MRI-style introspection for Hugging Face models — see how models think, not just what they say."
 readme = "README.md"
-license = {text = "Apache-2.0"}
+license = "Apache-2.0"
 requires-python = ">=3.10"
+authors = [
+    {name = "Anthony Maio"},
+]
+keywords = ["safety", "interpretability", "mechanistic-interpretability", "llm", "transformers", "activation-steering"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "torch>=2.0",
     "transformers>=4.38",
     "accelerate>=0.25",
     "numpy>=1.24",
 ]
+
+[project.urls]
+Homepage = "https://github.com/anthony-maio/safety-lens"
+Repository = "https://github.com/anthony-maio/safety-lens"
+Issues = "https://github.com/anthony-maio/safety-lens/issues"
 
 [project.optional-dependencies]
 eval = ["lighteval>=0.4"]
@@ -24,6 +42,9 @@ dev = [
     "pytest-cov>=4.0",
 ]
 all = ["safety-lens[eval,demo,dev]"]
+
+[tool.setuptools.packages.find]
+include = ["safety_lens*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
